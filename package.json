@@ -1,0 +1,13 @@
+{
+	"name": "just-login",
+	"version": "1.0.0",
+	"main": "./index.js",
+	"author": { "name": "TehShrike", "email": "me@JoshDuff.com", "url": "http://joshduff.com" },
+	"description": "",
+	"keywords": ["login","authentication","email"],
+	"dependencies": {
+		"nodemailer": ">= 0.3.0",
+		"stupid-indexer": "*"
+	},
+	"repository": { "type": "git", "url": "https://github.com/TehShrike/just-login.git" }
+}
