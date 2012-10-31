@@ -19,30 +19,6 @@ function UUID() {
 	})
 }
 
-function PublicSession(session) {
-	var self = this
-	this.getStatus = function() {
-		return session.status
-	}
-	this.getSessionKey = function() {
-		return session.session_key
-	}
-	this.logout = function() {
-		session.status = login_status.LOGGED_OUT
-	}
-	this.loggedIn = function() {
-		return session.status === login_status.LOGGED_IN
-	}
-	session.on('login', function() {
-		self.emit('login')
-	})
-	session.on('logout', function() {
-		self.emit('logout')
-	})
-}
-
-require('util').inherits(PublicSession, EventEmitter)
-
 function Session(email_address) {
 	this.session_key = UUID()
 	this.authentication_key = UUID()
@@ -57,17 +33,42 @@ Session.prototype.logout = function() {
 	this.emit('logout')
 }
 
-function URLBuilder(base_url_object) {
+Session.prototype.login = function() {
+	session.status = login_status.LOGGED_IN
+	session.emit('login')
+}
+
+function PublicSession(session) {
+	this.getSessionKey = function() { return session.session_key }
+	this.getStatus = function() { return session.status }
+	this.getEmailAddress = function() { return session.email_address }
+	this.loggedIn = function() { return session.status === login_status.LOGGED_IN }
+	
+	this.logout = function() { session.logout() }
+	
+	var self = this
+	session.on('login', function() { self.emit('login') })
+	session.on('logout', function() { self.emit('logout') })
+}
+
+require('util').inherits(PublicSession, EventEmitter)
+
+function URLBuilder(base_url_object, get_parameter) {
 	var url = require('url')
+	var base_search = base_url_object.search
+	var base_query = base_url_object.query
 	var my_copy = Object.getOwnPropertyNames(base_url_object).reduce(function(memo, property) {
 		memo[property] = base_url_object[property]
 		return memo
 	}, {})
-	var base_search = base_url_object.search
-	var base_query = base_url_object.query
+	
+	if (typeof base_search === 'string') {
+		base_search +=  (base_search.length > 0 ? '&' : '?') + get_parameter + '='
+	}
+	
 	this.getNewURL = function(key) {
 		if (typeof base_search === 'string') {
-			my_copy.search = base_search + '&key=' + key
+			my_copy.search = base_search + key
 		} else {
 			my_copy.key = key
 		}
@@ -75,10 +76,13 @@ function URLBuilder(base_url_object) {
 	}
 }
 
-function Authenticator(transport_type, transport_options, mail_options, base_url) {
+function Authenticator(transport_type, transport_options, mail_options, base_url, options) {
+	options.get_parameter = options.get_parameter || 'key'
+	options.client_action = options.client_action || 'close'
+
 	var transport = nodemailer.createTransport(transport_type, transport_options)
 	var storage = new Indexer(['session_key', 'authentication_key'], ['email_address'])
-	var url_builder = new URLBuilder(base_url)
+	var url_builder = new URLBuilder(base_url, options.get_parameter)
 	var message_text = mail_options.text || "Click here to log in! {{url}}"
 
 	var sendEmail = function(session) {
@@ -93,8 +97,7 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 
 		if (session) {
 			if (session.status !== login_status.LOGGED_OUT && session.status !== login_status.LOGGED_IN) {
-				session.status = login_status.LOGGED_IN
-				session.emit('login')
+				session.login()
 			}
 			return new PublicSession(session)
 		} else {
@@ -102,7 +105,7 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 		}
 	}
 
-	this.handleRequest = function(req, res) {
+	this.handleAuthenticationRequest = function(req, res) {
 		var url = require('url').parse(req.url, true)
 		var public_session = false
 
@@ -129,6 +132,13 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 	this.getSession = function(session_key, email_address) {
 		var session = storage.retrieve('session_key', session_key)
 		return (session && session.email_address === email_address.toLowerCase()) ? new PublicSession(session) : null
+	}
+
+	this.getSessionsByEmailAddress = function(email_address) {
+		var user_sessions = storage.retrieve('email_address', email_address.toLowerCase())
+		return user_sessions.map(function(session) {
+			return new PublicSession(session)
+		})
 	}
 }
 
