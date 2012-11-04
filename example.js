@@ -26,13 +26,29 @@ var base_url = {
 var login = new Login('SMTP', transport, mail_options, base_url)
 
 require('http').createServer(function(req, res) {
-	login.handleRequest(req, res)
+	login.handleRequest(req, res, function(session) {
+		if (session) {
+			res.write("Your session status is " + session.getStatus() + "\n")
+		}
+		if (session && session.loggedIn()) {
+			res.end("You're logged in!")
+		} else {
+			res.end("You're not logged in apparently!")
+		}
+	})
 }).listen(8080)
 
-var session = login.newLogin('me@JoshDuff.com')
+var session = login.newLogin('your_email@lol.com')
 
 session.on('login', function() {
-	console.log("Oh look, that fellow logged in!  Smashing!")
+	console.log("Oh look, that fellow logged in!  Smashing!  Logging out in a bit...")
+	setTimeout(function() {
+		session.logout()
+	}, 17000)
+})
+
+session.on('logout', function() {
+	console.log("I say, that fellow has logged out!")
 })
 
 setInterval(function() {

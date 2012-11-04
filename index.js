@@ -1,8 +1,10 @@
 "use strict"
 
 var nodemailer = require("nodemailer")
-var Indexer = require('stupid-indexer')
+//var Indexer = require('stupid-indexer')
+var Indexer = require('../stupid-indexer/index.js')
 var EventEmitter = require('events').EventEmitter
+var cookie = require('cookie')
 
 var login_status = {
 	NOTHING_YET: 'NOTHING_YET',
@@ -10,6 +12,9 @@ var login_status = {
 	LOGGED_IN: 'LOGGED_IN',
 	LOGGED_OUT: 'LOGGED_OUT'
 }
+
+var key_cookie_name = 'just-login-key'
+var email_cookie_name = 'just-login-email'
 
 // Courtesy of LouisT
 function UUID() {
@@ -34,8 +39,8 @@ Session.prototype.logout = function() {
 }
 
 Session.prototype.login = function() {
-	session.status = login_status.LOGGED_IN
-	session.emit('login')
+	this.status = login_status.LOGGED_IN
+	this.emit('login')
 }
 
 function PublicSession(session) {
@@ -77,6 +82,9 @@ function URLBuilder(base_url_object, get_parameter) {
 }
 
 function Authenticator(transport_type, transport_options, mail_options, base_url, options) {
+	var self = this
+	//var cookie_domain = base_url.hostname || base_url.host
+	options = options || {}
 	options.get_parameter = options.get_parameter || 'key'
 	options.client_action = options.client_action || 'close'
 
@@ -85,6 +93,28 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 	var url_builder = new URLBuilder(base_url, options.get_parameter)
 	var message_text = mail_options.text || "Click here to log in! {{url}}"
 
+	var getSessionFromCookies = function(req, cb) {
+		var cookies = cookie.parse(req.headers.cookie || '')
+		if (typeof cookies[key_cookie_name] !== 'undefined' && typeof cookies[email_cookie_name] !== 'undefined') {
+			self.getSession(cookies[key_cookie_name], cookies[email_cookie_name], cb)
+		} else {
+			cb(null)
+		}
+	}
+
+	var setCookies = function(public_session, res) {
+		var expiration_increment = 30 * 24 * 60 * 60 // 30 days mebbe?
+		var expiration_date = new Date((new Date()).getTime() + (expiration_increment * 1000))
+		var cookie_options = {
+			expires: expiration_date,
+			maxAge: expiration_increment
+			//, domain: cookie_domain 
+		}
+		var key = cookie.serialize(key_cookie_name, public_session.getSessionKey(), cookie_options)
+		var email = cookie.serialize(email_cookie_name, public_session.getEmailAddress(), cookie_options)
+		res.setHeader("Set-Cookie", [key, email])
+	}
+
 	var sendEmail = function(session) {
 		mail_options.to = session.email_address
 		mail_options.text = message_text.replace('{{url}}', url_builder.getNewURL(session.authentication_key))
@@ -92,34 +122,49 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 		session.status = login_status.EMAIL_SENT
 	}
 
-	this.authenticate = function(authentication_key) {
+	this.authenticate = function(authentication_key, cb) {
 		var session = storage.retrieve('authentication_key', authentication_key)
 
 		if (session) {
 			if (session.status !== login_status.LOGGED_OUT && session.status !== login_status.LOGGED_IN) {
 				session.login()
 			}
-			return new PublicSession(session)
+			cb(new PublicSession(session))
 		} else {
-			return false
+			cb(null)
 		}
 	}
 
-	this.handleAuthenticationRequest = function(req, res) {
+	var moveCookiesForwardIfApplicable = function(session, res) {
+		if (session && session.loggedIn()) {
+			setCookies(session, res)
+		}
+	}
+
+	// Loads the session from the cookies, if possible
+	// If the cookies are not present, attempts to authenticate via the get parameters
+	// If the get parameter is not present, sets the session to false
+	this.handleRequest = function(req, res, cb) {
 		var url = require('url').parse(req.url, true)
-		var public_session = false
+		getSessionFromCookies(req, function(session) {
+			var current_session_is_not_logged_in = session === null || !session.loggedIn()
+			if (current_session_is_not_logged_in && typeof url.query.key !== 'undefined') {
+				self.authenticate(url.query.key, function(session) {
+					moveCookiesForwardIfApplicable(session, res)
+					cb(session)
+				})
+			} else {
+				moveCookiesForwardIfApplicable(session, res)
+				cb(session)
+			}
+		})
+	}
 
-		if (url.query.key) {
-			public_session = this.authenticate(url.query.key)
-		}
-
-		if (public_session && public_session.loggedIn()) {
-			res.write("You're logged in!")
-		} else {
-			res.write("Hey, you can't log in, I guess!")
-		}
-
-		res.end()
+	this.handleConnectRequest = function(req, res, next) {
+		self.handleRequest(req, res, function(session) {
+			req.session = session
+			next()
+		})
 	}
 
 	this.newLogin = function(email_address) {
@@ -129,16 +174,16 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 		return new PublicSession(session)
 	}
 
-	this.getSession = function(session_key, email_address) {
+	this.getSession = function(session_key, email_address, cb) {
 		var session = storage.retrieve('session_key', session_key)
-		return (session && session.email_address === email_address.toLowerCase()) ? new PublicSession(session) : null
+		cb((session && session.email_address === email_address.toLowerCase()) ? new PublicSession(session) : null)
 	}
 
-	this.getSessionsByEmailAddress = function(email_address) {
+	this.getSessionsByEmailAddress = function(email_address, cb) {
 		var user_sessions = storage.retrieve('email_address', email_address.toLowerCase())
-		return user_sessions.map(function(session) {
+		cb(user_sessions.map(function(session) {
 			return new PublicSession(session)
-		})
+		}))
 	}
 }
 
