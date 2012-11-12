@@ -18,7 +18,8 @@ var email_cookie_name = 'just-login-email'
 
 // Courtesy of LouisT
 function UUID() {
-	return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+	// 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'
+	return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
 		var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8)
 		return v.toString(16)
 	})
@@ -60,23 +61,16 @@ require('util').inherits(PublicSession, EventEmitter)
 
 function URLBuilder(base_url_object, get_parameter) {
 	var url = require('url')
-	var base_search = base_url_object.search
-	var base_query = base_url_object.query
 	var my_copy = Object.getOwnPropertyNames(base_url_object).reduce(function(memo, property) {
 		memo[property] = base_url_object[property]
 		return memo
 	}, {})
+	var base_search = my_copy.search || ''
 	
-	if (typeof base_search === 'string') {
-		base_search +=  (base_search.length > 0 ? '&' : '?') + get_parameter + '='
-	}
+	base_search +=  (base_search.length > 0 ? '&' : '?') + get_parameter + '='
 	
 	this.getNewURL = function(key) {
-		if (typeof base_search === 'string') {
-			my_copy.search = base_search + key
-		} else {
-			my_copy.key = key
-		}
+		my_copy.search = base_search + key
 		return url.format(my_copy)
 	}
 }
@@ -96,22 +90,22 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 	var getSessionFromCookies = function(req, cb) {
 		var cookies = cookie.parse(req.headers.cookie || '')
 		if (typeof cookies[key_cookie_name] !== 'undefined' && typeof cookies[email_cookie_name] !== 'undefined') {
-			self.getSession(cookies[key_cookie_name], cookies[email_cookie_name], cb)
+			getSession(cookies[key_cookie_name], cookies[email_cookie_name], cb)
 		} else {
 			cb(null)
 		}
 	}
 
-	var setCookies = function(public_session, res) {
-		var expiration_increment = 30 * 24 * 60 * 60 // 30 days mebbe?
+	var setCookies = function(public_session, res, days) {
+		var expiration_increment = days * 24 * 60 * 60
 		var expiration_date = new Date((new Date()).getTime() + (expiration_increment * 1000))
 		var cookie_options = {
 			expires: expiration_date,
 			maxAge: expiration_increment
 			//, domain: cookie_domain 
 		}
-		var key = cookie.serialize(key_cookie_name, public_session.getSessionKey(), cookie_options)
-		var email = cookie.serialize(email_cookie_name, public_session.getEmailAddress(), cookie_options)
+		var key = cookie.serialize(key_cookie_name, public_session.session_key, cookie_options)
+		var email = cookie.serialize(email_cookie_name, public_session.email_address, cookie_options)
 		res.setHeader("Set-Cookie", [key, email])
 	}
 
@@ -122,40 +116,47 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 		session.status = login_status.EMAIL_SENT
 	}
 
+	var setSessionEmail = function(email_address) {
+		this.email_address = email_address
+		sendEmail(this)
+		delete this.sendSessionEmail
+	}
+
+	this.createSession = function() {
+		var session = new Session()
+		session.sendEmail = setSessionEmail
+	}
+
 	this.authenticate = function(authentication_key, cb) {
 		var session = storage.retrieve('authentication_key', authentication_key)
 
-		if (session) {
-			if (session.status !== login_status.LOGGED_OUT && session.status !== login_status.LOGGED_IN) {
-				session.login()
-			}
-			cb(new PublicSession(session))
+		// If the authentication key is found in the store, and it hasn't yet been logged in, it gets logged in!
+		if (session && session.status !== login_status.LOGGED_OUT && session.status !== login_status.LOGGED_IN) {
+			session.login()
+			cb(session)
 		} else {
 			cb(null)
 		}
 	}
 
-	var moveCookiesForwardIfApplicable = function(session, res) {
-		if (session && session.loggedIn()) {
-			setCookies(session, res)
-		}
-	}
-
-	// Loads the session from the cookies, if possible
-	// If the cookies are not present, attempts to authenticate via the get parameters
-	// If the get parameter is not present, sets the session to false
+	// Loads the session from the cookies, if possible.
+	// If the cookies do not yield a logged-in session, it attempts
+	// to authenticate via the get parameters.
+	// If the get parameter is not present, the session is null.
 	this.handleRequest = function(req, res, cb) {
 		var url = require('url').parse(req.url, true)
+		var sendSessionBack = function(session) {
+			if (session === null) {
+				session = new Session()
+			}
+			setCookies(session, res, 30)
+			cb(new PublicSession(session))
+		}
 		getSessionFromCookies(req, function(session) {
-			var current_session_is_not_logged_in = session === null || !session.loggedIn()
-			if (current_session_is_not_logged_in && typeof url.query.key !== 'undefined') {
-				self.authenticate(url.query.key, function(session) {
-					moveCookiesForwardIfApplicable(session, res)
-					cb(session)
-				})
+			if ((session === null || session.status !== login_status.LOGGED_IN) && typeof url.query.key === 'string') {
+				self.authenticate(url.query.key, sendSessionBack)
 			} else {
-				moveCookiesForwardIfApplicable(session, res)
-				cb(session)
+				sendSessionBack(session)
 			}
 		})
 	}
@@ -170,13 +171,18 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 	this.newLogin = function(email_address) {
 		var session = new Session(email_address.toLowerCase())
 		sendEmail(session)
-		storage.store(session)
+		storage.index(session)
 		return new PublicSession(session)
 	}
 
-	this.getSession = function(session_key, email_address, cb) {
+	var getSession = function(session_key, email_address, cb) {
 		var session = storage.retrieve('session_key', session_key)
-		cb((session && session.email_address === email_address.toLowerCase()) ? new PublicSession(session) : null)
+		cb((session && session.email_address === email_address.toLowerCase()) ? session : null)
+	}
+
+	this.getPublicSession = function(session_key, email_address, cb) {
+		var session = getSession(session_key, email_address, cb)
+		cb(session === null ? null : new PublicSession(session))
 	}
 
 	this.getSessionsByEmailAddress = function(email_address, cb) {
