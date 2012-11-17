@@ -77,7 +77,7 @@ function URLBuilder(base_url_object, get_parameter) {
 
 function Authenticator(transport_type, transport_options, mail_options, base_url, options) {
 	var self = this
-	//var cookie_domain = base_url.hostname || base_url.host
+	var cookie_domain = base_url.hostname || base_url.host
 	options = options || {}
 	options.get_parameter = options.get_parameter || 'key'
 	options.client_action = options.client_action || 'close'
@@ -96,16 +96,17 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 		}
 	}
 
-	var setCookies = function(public_session, res, days) {
+	var setCookies = function(session, res, days) {
 		var expiration_increment = days * 24 * 60 * 60
 		var expiration_date = new Date((new Date()).getTime() + (expiration_increment * 1000))
+		console.log(expiration_date)
 		var cookie_options = {
 			expires: expiration_date,
-			maxAge: expiration_increment
-			//, domain: cookie_domain 
+			maxAge: expiration_increment,
+			domain: cookie_domain 
 		}
-		var key = cookie.serialize(key_cookie_name, public_session.session_key, cookie_options)
-		var email = cookie.serialize(email_cookie_name, public_session.email_address, cookie_options)
+		var key = cookie.serialize(key_cookie_name, session.session_key, cookie_options)
+		var email = cookie.serialize(email_cookie_name, session.email_address, cookie_options)
 		res.setHeader("Set-Cookie", [key, email])
 	}
 
@@ -119,12 +120,25 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 	var setSessionEmail = function(email_address) {
 		this.email_address = email_address
 		sendEmail(this)
-		delete this.sendSessionEmail
+		delete this.setSessionEmail
 	}
 
-	this.createSession = function() {
-		var session = new Session()
-		session.sendEmail = setSessionEmail
+	var createSession = function(email_address) {
+		var session = new Session(email_address)
+		storage.index(session)
+		if (typeof email_address !== 'string') {
+			session.sendEmail = setSessionEmail
+		} else {
+			sendEmail(session)
+		}
+		session.on('logout', function() {
+			storage.remove(session)
+		})
+		return session
+	}
+
+	this.createSession = function(email_address) {
+		return new PublicSession(createSession(email_address))
 	}
 
 	this.authenticate = function(authentication_key, cb) {
@@ -147,7 +161,7 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 		var url = require('url').parse(req.url, true)
 		var sendSessionBack = function(session) {
 			if (session === null) {
-				session = new Session()
+				session = createSession()
 			}
 			setCookies(session, res, 30)
 			cb(new PublicSession(session))
@@ -168,19 +182,12 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 		})
 	}
 
-	this.newLogin = function(email_address) {
-		var session = new Session(email_address.toLowerCase())
-		sendEmail(session)
-		storage.index(session)
-		return new PublicSession(session)
-	}
-
 	var getSession = function(session_key, email_address, cb) {
 		var session = storage.retrieve('session_key', session_key)
 		cb((session && session.email_address === email_address.toLowerCase()) ? session : null)
 	}
 
-	this.getPublicSession = function(session_key, email_address, cb) {
+	this.getSession = function(session_key, email_address, cb) {
 		var session = getSession(session_key, email_address, cb)
 		cb(session === null ? null : new PublicSession(session))
 	}

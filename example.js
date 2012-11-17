@@ -38,7 +38,7 @@ require('http').createServer(function(req, res) {
 	})
 }).listen(8080)
 
-var session = login.newLogin('your_email@lol.com')
+var session = login.createSession('your_email@lol.com')
 
 session.on('login', function() {
 	console.log("Oh look, that fellow logged in!  Smashing!  Logging out in a bit...")
