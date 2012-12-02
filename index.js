@@ -99,7 +99,6 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 	var setCookies = function(session, res, days) {
 		var expiration_increment = days * 24 * 60 * 60
 		var expiration_date = new Date((new Date()).getTime() + (expiration_increment * 1000))
-		console.log(expiration_date)
 		var cookie_options = {
 			expires: expiration_date,
 			maxAge: expiration_increment,
@@ -124,6 +123,9 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 	}
 
 	var createSession = function(email_address) {
+		if (email_address) {
+			email_address = email_address.toLowerCase()
+		}
 		var session = new Session(email_address)
 		storage.index(session)
 		if (typeof email_address !== 'string') {
@@ -188,8 +190,9 @@ function Authenticator(transport_type, transport_options, mail_options, base_url
 	}
 
 	this.getSession = function(session_key, email_address, cb) {
-		var session = getSession(session_key, email_address, cb)
-		cb(session === null ? null : new PublicSession(session))
+		getSession(session_key, email_address, function(session) {
+			cb(session === null ? null : new PublicSession(session))
+		})
 	}
 
 	this.getSessionsByEmailAddress = function(email_address, cb) {
